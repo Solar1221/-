@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Three.js 手势交互粒子系统</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #video-input { position: absolute; top: 0; left: 0; opacity: 0; pointer-events: none; }
+        /* 简单的 UI 容器 */
+        #gui-container { position: absolute; top: 10px; right: 10px; z-index: 100; }
+        #fullscreen-btn {
+            position: absolute; bottom: 20px; right: 20px;
+            padding: 10px 20px; background: rgba(255,255,255,0.2);
+            color: white; border: 1px solid white; cursor: pointer;
+            font-family: sans-serif; border-radius: 5px; z-index: 100;
+        }
+        #fullscreen-btn:hover { background: rgba(255,255,255,0.4); }
+    </style>
+</head>
+<body>
+
+    <video id="video-input"></video>
+    
+    <button id="fullscreen-btn">全屏模式</button>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "@mediapipe/hands": "https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js",
+                "@mediapipe/camera_utils": "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js",
+                "lil-gui": "https://unpkg.com/lil-gui@0.19.1/dist/lil-gui.esm.min.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import GUI from 'lil-gui';
+
+        // --- 1. 初始化场景 ---
+        const scene = new THREE.Scene();
+        // 添加一点雾效增加深邃感
+        scene.fog = new THREE.FogExp2(0x000000, 0.002);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 30;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        // --- 2. 粒子系统核心 ---
+        const particleCount = 15000;
+        const geometry = new THREE.BufferGeometry();
+        const initialPositions = new Float32Array(particleCount * 3);
+        const targetPositions = new Float32Array(particleCount * 3); // 存储目标形状的位置
+        
+        // 初始化：默认全在中心，或者随机散开
+        for (let i = 0; i < particleCount * 3; i++) {
+            initialPositions[i] = (Math.random() - 0.5) * 100;
+        }
+        
+        geometry.setAttribute('position', new THREE.BufferAttribute(initialPositions, 3));
+        
+        // 材质
+        const material = new THREE.PointsMaterial({
+            color: 0x00ffff,
+            size: 0.15,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // --- 3. 形状生成逻辑 ---
+        const shapes = {
+            sphere: () => {
+                const radius = 10;
+                for (let i = 0; i < particleCount; i++) {
+                    const phi = Math.acos(-1 + (2 * i) / particleCount);
+                    const theta = Math.sqrt(particleCount * Math.PI) * phi;
+                    targetPositions[i * 3] = radius * Math.cos(theta) * Math.sin(phi);
+                    targetPositions[i * 3 + 1] = radius * Math.sin(theta) * Math.sin(phi);
+                    targetPositions[i * 3 + 2] = radius * Math.cos(phi);
+                }
+            },
+            cube: () => {
+                const size = 15;
+                for (let i = 0; i < particleCount; i++) {
+                    targetPositions[i * 3] = (Math.random() - 0.5) * size;
+                    targetPositions[i * 3 + 1] = (Math.random() - 0.5) * size;
+                    targetPositions[i * 3 + 2] = (Math.random() - 0.5) * size;
+                }
+            },
+            galaxy: () => {
+                 // 简单的螺旋星系逻辑
+                for(let i=0; i < particleCount; i++){
+                    const angle = i * 0.02;
+                    const radius = i * 0.005;
+                    targetPositions[i*3] = Math.cos(angle) * radius * 10;
+                    targetPositions[i*3+1] = (Math.random()-0.5) * 2; // 扁平
+                    targetPositions[i*3+2] = Math.sin(angle) * radius * 10;
+                }
+            }
+        };
+
+        // 默认生成球体
+        shapes.sphere();
+
+        // --- 4. UI 面板 ---
+        const gui = new GUI({ title: '控制面板' });
+        const params = {
+            color: '#00ffff',
+            shape: 'Sphere',
+            handControl: true, // 开关手势控制
+            manualProgress: 1.0 // 手动控制进度（如果没摄像头）
+        };
+
+        // 颜色选择器
+        gui.addColor(params, 'color').name('粒子颜色').onChange(val => {
+            material.color.set(val);
+        });
+
+        // 形状切换
+        gui.add(params, 'shape', ['Sphere', 'Cube', 'Galaxy']).name('切换模型').onChange(val => {
+            if (val === 'Sphere') shapes.sphere();
+            if (val === 'Cube') shapes.cube();
+            if (val === 'Galaxy') shapes.galaxy();
+        });
+        
+        gui.add(params, 'handControl').name('启用手势控制');
+        gui.add(params, 'manualProgress', 0, 1).name('手动缩放演示').listen();
+
+
+        // --- 5. MediaPipe 手势识别集成 ---
+        const videoElement = document.getElementById('video-input');
+        let interactionFactor = 1.0; // 0 = 收缩, 1 = 正常
+
+        // 动态加载 MediaPipe (因为是外部全局变量)
+        // 注意：在实际项目中推荐使用 NPM 包管理，这里为了单文件演示使用 CDN 全局方式需等待加载
+        // 此处简化处理，假设环境支持 ES Module 或异步加载脚本
+        
+        async function setupMediaPipe() {
+            // 这里我们需要引用全局的 window.Hands (MediaPipe CDN 导出)
+            // 实际开发中请参考 MediaPipe 官方文档的标准加载流程
+            const { Hands } = window; 
+            const { Camera } = window;
+            
+            if(!Hands) {
+                console.log("正在等待 MediaPipe 加载...");
+                // 简单的轮询等待库加载
+                setTimeout(setupMediaPipe, 100);
+                return;
+            }
+
+            const hands = new Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }});
+
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onResults);
+
+            const camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640,
+                height: 480
+            });
+            camera.start();
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // 关键点 4 (拇指尖) 和 8 (食指尖)
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+
+                // 计算距离 (简单欧氏距离)
+                const distance = Math.sqrt(
+                    Math.pow(thumbTip.x - indexTip.x, 2) + 
+                    Math.pow(thumbTip.y - indexTip.y, 2)
+                );
+
+                // 映射距离到 0~1 之间
+                // 通常手捏合时距离约 0.02，张开时约 0.2 (取决于摄像头距离)
+                // 这里做一个平滑映射
+                let val = (distance - 0.02) * 5; 
+                val = Math.max(0, Math.min(1, val)); // Clamp 0 to 1
+
+                // 平滑插值，避免抖动
+                interactionFactor += (val - interactionFactor) * 0.1;
+                
+                // 同步 UI
+                params.manualProgress = interactionFactor;
+            }
+        }
+
+        // 加载 MediaPipe 脚本标签
+        const scriptMP = document.createElement('script');
+        scriptMP.src = "https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js";
+        scriptMP.crossOrigin = "anonymous";
+        scriptMP.onload = () => {
+             const scriptCam = document.createElement('script');
+             scriptCam.src = "https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js";
+             scriptCam.crossOrigin = "anonymous";
+             scriptCam.onload = setupMediaPipe;
+             document.body.appendChild(scriptCam);
+        };
+        document.body.appendChild(scriptMP);
+
+
+        // --- 6. 动画与交互循环 ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const time = clock.getElapsedTime();
+            const positions = particles.geometry.attributes.position.array;
+            
+            // 确定当前的缩放因子 (手势 vs 手动)
+            const progress = params.handControl ? interactionFactor : params.manualProgress;
+
+            // 粒子运动逻辑
+            for (let i = 0; i < particleCount; i++) {
+                const ix = i * 3;
+                const iy = i * 3 + 1;
+                const iz = i * 3 + 2;
+
+                const tx = targetPositions[ix];
+                const ty = targetPositions[iy];
+                const tz = targetPositions[iz];
+
+                // 基础位置：根据 progress 从中心(0,0,0) 向 目标位置 插值
+                // 当 progress = 0 (手闭合), 粒子聚拢到中心
+                // 当 progress = 1 (手张开), 粒子在目标模型位置
+                
+                // 添加一些噪点/漂浮效果，让粒子活着
+                const noise = Math.sin(time + i) * 0.1;
+
+                // 简单的线性插值 (Lerp) 实现响应
+                // 这里的 0.1 是平滑系数，值越大反应越快但越僵硬
+                positions[ix] += (tx * progress - positions[ix]) * 0.1;
+                positions[iy] += (ty * progress - positions[iy]) * 0.1;
+                positions[iz] += (tz * progress - positions[iz]) * 0.1;
+            }
+
+            particles.geometry.attributes.position.needsUpdate = true;
+            
+            // 缓慢自转
+            particles.rotation.y += 0.002;
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // --- 7. 辅助功能 ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        document.getElementById('fullscreen-btn').addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.body.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        });
+    </script>
+</body>
+</html>
